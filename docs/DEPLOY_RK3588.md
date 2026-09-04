@@ -68,11 +68,20 @@ sudo systemctl enable --now docker
 **飞控接线**（RK3588）：
 
 - **串口接线**：飞控的 TELEM/MAVLink 串口接到 RK3588 的 UART 引脚（TX↔RX、RX↔TX、GND↔GND），波特率按飞控配置（默认 115200，或 921600）。
-- **USB 接线（推荐）**：USB-TTL 数传或飞控 USB 口接到 RK3588，会在 `/dev/ttyUSB*` 或 `/dev/ttyACM*` 出现。**USB 路径比板载 UART 更容易**，无需改 overlay。
+- **USB 接线（推荐）**：USB-TTL 数传或飞控 USB 口接到 RK3588，会在 `/dev/ttyUSB*` 或 `/dev/ttyACM*` 出现。**USB 路径比板载 UART 更容易**，无需改 overlay。`ttyUSB`/`ttyACM` **不是固定的板载物理口**，是外接 USB 串口设备自动生成的节点：
+
+  | 节点 | Linux 驱动 | 对应的物理设备 |
+  | --- | --- | --- |
+  | `/dev/ttyUSB*` | FTDI / CH340 / CP210x 等 USB-UART 桥 | **USB 转 TTL 串口线**（CP2102/CH340/FT232）插板载 USB 口 |
+  | `/dev/ttyACM*` | USB CDC ACM | 飞控 **USB 口直插**板载 USB（ArduPilot/PX4 的 USB 口）、CDC 类 USB-TTL 线、4G 模块等 |
+
+  对只有 HDMI-RX + USB/网口的 RK3588 载板，飞控/数传通常用**USB 转 TTL 串口线**（→ `ttyUSB0`）或**飞控 USB 口直插**（→ `ttyACM0`）。
 - 连接后确认设备节点：
 
   ```bash
   ls -l /dev/ttyS* /dev/ttyUSB* /dev/ttyACM* /dev/serial/by-id/
+  # 查看已插的 USB 设备（应能看到转串口/飞控 USB 设备）
+  lsusb
   ```
 
 ---
@@ -136,10 +145,12 @@ MAVLINK_BAUD=115200
 # 也可在网页 Integrations 页填写（存数据库，优先）
 
 # ── 摄像头 ─────────────────────────────────────────
-# RK3588 无 rpiCamera；用 V4L2 或 RTSP（见第 6 节）
+# RK3588 无 rpiCamera；用 RTSP(url) 或 publisher(宿主机 ffmpeg 推流，见第 6 节)
+# 注意：latest-rpi 镜像内无 ffmpeg，采集命令要跑在宿主机，而非 WEBRTC_RUNONDEMAND
 WEBRTC_SOURCE=publisher
+# 若已有外部 RTSP 源，改用：
 # WEBRTC_SOURCE=rtsp://user:pass@host:554/stream
-WEBRTC_RUNONDEMAND=ffmpeg -f v4l2 -framerate 30 -video_size 1280x720 -i /dev/video0 -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -f rtsp rtsp://localhost:8554/cam
+WEBRTC_RUNONDEMAND=
 
 # ── 空气域 / 地图 / AI（可选）────────────────────
 # OPENAIP_API_KEY=
@@ -176,27 +187,60 @@ docker pull ghcr.io/judahpaul16/canarygc:latest
 
 ---
 
-## 6. 摄像头配置
+## 6. 摄像头 / 视频输入
 
-RK3588 **没有树莓派 CSI 的 `rpiCamera` 源**。代码已支持 `usb`（V4L2）与 `url`（RTSP）两种（见 `src/lib/server/camera-source.ts`），通过 `.env` 的 `WEBRTC_SOURCE` 或**网页 Integrations → Camera** 配置。
+RK3588 **没有树莓派 CSI 的 `rpiCamera` 源**。CanaryGC 用 `usb`（V4L2 `publisher`）或 `url`（RTSP）两种源（见 `src/lib/server/camera-source.ts`）。
 
-- **板载/USB 摄像头（V4L2）**：确认 `/dev/video0` 存在。设 `WEBRTC_SOURCE=publisher` + `WEBRTC_RUNONDEMAND` 指向设备；或在 Integrations 选 `USB camera` 并填 `/dev/video0`。
-- **外部 RTSP（IP 摄像头）**：设 `WEBRTC_SOURCE=rtsp://...`，MediaMTX 零转码透传，负载最低。
+### 6.1 关键前提：`latest-rpi` 镜像内没有 ffmpeg
+
+CanaryGC 的 `usb`(publisher) 源依赖 MediaMTX 的 `runOnDemand` 在**容器内**跑 ffmpeg 采集 V4L2 设备。但 `bluenviron/mediamtx:latest-rpi` 镜像**不含 ffmpeg**（已实证：容器内 `ffmpeg` 不存在）。因此**不能**只靠 `.env` 的 `WEBRTC_RUNONDEMAND` + `WEBRTC_SOURCE=publisher` 就让 CanaryGC 自己采 HDMI/MIPI——容器里根本没有 ffmpeg 去执行那条采集命令。
+
+正确做法：**用宿主机的 ffmpeg**（Armbian 自带 `/usr/bin/ffmpeg`）采集板载视频设备，推 `RTSP` 给 MediaMTX；MediaMTX 的 `cam` 路径设为 `rtsp://`（url 源）或 publisher 接收。**已实证该链路在 RK3588 上可用**（板载 ffmpeg 推流 → MediaMTX 日志 `[path cam] stream is available and online`）。
+
+### 6.2 方案 A：宿主机 ffmpeg 采集 HDMI-in / MIPI，推 RTSP（推荐）
+
+```bash
+# 1) 启动 webrtc（.env 已设 WEBRTC_SOURCE=publisher）
+docker compose --profile production up -d webrtc
+
+# 2) 宿主机采集并推流。RK3588 HDMI 输入 = /dev/video0 (rk_hdmirx)，
+#    先确认有 HDMI 信号（无信号 ffmpeg 会卡住）：
+v4l2-ctl --device=/dev/video0 --get-dv-timings   # 应显示 timings，而非 "Link has been severed"
+ffmpeg -f v4l2 -framerate 30 -video_size 1280x720 -i /dev/video0 \
+       -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p \
+       -b:v 1M -maxrate 1M -bufsize 2M \
+       -f rtsp rtsp://127.0.0.1:8554/cam
+```
+
+`rtsp://127.0.0.1:8554/cam` 即 MediaMTX 的 `cam` 路径（host 网络共享宿主机 `127.0.0.1`）。用 `nohup`/`systemd` 常驻即可。MediaMTX 会在浏览器访问 `:8889/cam` 出 WebRTC 流。
+
+### 6.3 两块不同开发板的视频接入
+
+| 开发板 | 视频硬件 | 采集节点 | 接入方式 |
+| --- | --- | --- | --- |
+| **RK3588**（HDMI-RX 板） | HDMI 输入（`rk_hdmirx`） | `/dev/video0` | 把图传接收机/航拍相机的 **HDMI 输出**接入板子 HDMI-in，按 6.2 用宿主机 ffmpeg 采 `/dev/video0`。HDMI-in 无信号时 `Link has been severed`，不会出图 |
+| **RK3576**（MIPI 板） | MIPI CSI 摄像头 | `/dev/video*`（经 RK ISP） | 接 MIPI CSI camera → `v4l2-ctl --list-devices` 找采集节点 → 同样用宿主机 ffmpeg 采该节点推 RTSP |
+
+> 若视频帧率/分辨率过高导致 CPU 满载，降低 `-framerate`/`-video_size`，或改用 `-c:v h264` 硬件编码（Armbian 的 `ffmpeg` 若带 `--enable-rkmpp`，可用 `-c:v h264_rkmpp` 走 RK 硬件编解码，极省 CPU）。
+
+### 6.4 `url`（RTSP/IP 摄像头）源
+
+若已有外部 RTSP 视频源（IP 摄像头、数传 RTSP、或 6.2 里宿主机推流已先落在一个独立 RTSP server），直接在 `.env` 设 `WEBRTC_SOURCE=rtsp://...`，MediaMTX 主动拉取、零转码，CPU 负载最低。
 
 > **⚠️ MediaMTX API 版本兼容性（上游已知问题，与 RK3588 无关）**
 >
 > 实测 `bluenviron/mediamtx:latest-rpi` 拉到的当前版本（1.20.1）的 API 路径与 app 代码期望不一致：app 在 Integrations 里保存摄像头源时调 `PATCH /v3/config/paths/patch/cam`（`src/lib/server/mediamtx.ts:20`），而 1.20.1 对该路径返回 404，导致 app 报 `MediaMTX not reachable to apply camera source: fetch failed`（`/v3/config/paths/get/cam` 等端点则返回 200）。此问题在树莓派上同样存在，属上游待修复项。
 >
-> **Workaround**：直接在 `.env` 设置 `WEBRTC_SOURCE`（经 docker-compose 注入 `MTX_PATHS_CAM_SOURCE`，容器启动时生效，不依赖 PATCH API）：
+> **Workaround**：直接在 `.env` 设置 `WEBRTC_SOURCE`（经 docker-compose 注入 `MTX_PATHS_CAM_SOURCE`，容器启动 webrtc 时生效，不依赖 PATCH API）：
 
 ```dotenv
-# 例如接 HDMI-in 或外部 RTSP：
+# 接外部 RTSP 源（含 IP 摄像头/数传 RTSP）：
 WEBRTC_SOURCE=rtsp://user:pass@host:554/stream
-# 或 V4L2 采集：
+# 接板载 HDMI/MIPI：publisher + 宿主机 ffmpeg 推流（见 6.2，把采集命令跑在宿主机制而非容器内）
 WEBRTC_SOURCE=publisher
-WEBRTC_RUNONDEMAND=ffmpeg -f v4l2 -framerate 30 -video_size 1280x720 -i /dev/video0 -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p -f rtsp rtsp://localhost:8554/cam
+WEBRTC_RUNONDEMAND=
 ```
-然后 `docker compose --profile production up -d webrtc` 重启 webrtc 即可生效。
+然后 `docker compose --profile production up -d webrtc` 重启 webrtc 生效；再从宿主机执行 6.2 的 ffmpeg 推流命令。
 
 若暂时不需要视频，启动时可省略 `webrtc` 服务。
 
@@ -254,7 +298,8 @@ sudo systemctl enable --now canarygc
 | 页面打不开 | `docker compose --profile production ps`；`curl http://localhost/version`；`docker logs canarygc_app` |
 | 飞控连不上（Dashboard 离线） | 确认串口节点存在；试显式 `MAVLINK_SERIAL_PATH`；`docker exec canarygc_app ls -l /dev/ttyS*`（容器内能看到节点）；查看 `docker logs canarygc_app` 中的 MAVLink autodetect / serial 报错 |
 | serialport 报错 | 见第 5 节；可能需在 RK3588 本机重构建镜像，或改用 USB 串口 |
-| 摄像头黑屏 | 确认 `.env` 的 `WEBRTC_SOURCE` 正确；`ffmpeg` 命令是否可用；`docker logs canarygc_webrtc`；`v4l2-ctl --list-devices` |
-| 保存摄像头源报 `MediaMTX not reachable` | 见第 6 节 MediaMTX API 版本兼容性说明；改用 `.env` 的 `WEBRTC_SOURCE` 方式配置 |
+| 摄像头黑屏 | 确认 `.env` 的 `WEBRTC_SOURCE` 正确；**latest-rpi 镜像无 ffmpeg，采集命令须跑在宿主机**（见 6.1/6.2）；`docker logs canarygc_webrtc`；`v4l2-ctl --list-devices` |
+| HDMI-in 不出图 | `v4l2-ctl --device=/dev/video0 --get-dv-timings` 若报 `Link has been severed` 说明无 HDMI 信号，接好图传接收机/摄像头 HDMI 输出后再采 |
+| 保存摄像头源报 `MediaMTX not reachable` | 见第 6 节 MediaMTX API 版本兼容性说明；改用 `.env` 的 `WEBRTC_SOURCE`（+宿主机 ffmpeg 推流）方式配置 |
 | 串口被 ocuppied | 第 3 节：检查 getty/console 占用，换用另一路 UART 或禁用 console |
 | UART 节点不存在 | `/boot/armbianEnv.txt` 启用 overlay 后 reboot，确认 `overlays` 生效 |
