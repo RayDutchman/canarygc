@@ -61,6 +61,25 @@ curl -s https://raw.githubusercontent.com/judahpaul16/canarygc/main/contrib/setu
     bash -s -- --install-only
 ```
 
+### RK3588 (Rockchip / Armbian)
+For RK3588 boards (arm64, Armbian, vendor 6.1 kernel) that lack the Raspberry Pi
+CSI camera and UART paths, use the RK3588-specific setup script and deployment
+guide instead of `setup.sh` (which targets the Raspberry Pi /boot/firmware,
+`rpiCamera` and `dtoverlay` conventions):
+
+```bash
+# Set to your own fork, or this repo:
+export REPO_URL=https://github.com/<your-account>/canarygc.git
+
+# Full install (Docker, UFW, serial/video group perms) + production bring-up
+bash -s -- < contrib/setup-rk3588.sh
+# App-only, assuming Docker is already installed:
+bash -s -- --install-only < contrib/setup-rk3588.sh
+```
+
+Full details — serial (ttyS*), camera (V4L2/RTSP), `.env`, systemd autostart and
+kernel notes — are in [`docs/DEPLOY_RK3588.md`](docs/DEPLOY_RK3588.md).
+
 
 ---
 
