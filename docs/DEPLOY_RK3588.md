@@ -218,7 +218,8 @@ ffmpeg -f v4l2 -framerate 30 -i /dev/video0 \
 
 说明：
 - ffmpeg 会自动插入 BGR→NV12 转换再交给 `h264_rkmpp`（已实证 1080p BGR 输入自动转换成功），该转换是 CPU 软转，约占用单核 60%——对 8 核 RK3588 无压力，编码本身在 VPU 上不占 CPU。
-- **RGA 硬件转格式当前不可用**：虽 Armbian 的 ffmpeg 编译了 `--enable-rkrga`，但本板内核未加载 RGA 驱动（`lsmod` 无 rga 条目），`scale_rkrga` 运行时报 `Function not implemented`。若需更低 CPU，可改用 `-vf format=nv12` 之外的 `vpp_rkrga`（同样不可用）或让源端输出 YCbCr 4:2:2。
+- **RGA 硬件转格式当前不可用**：`scale_rkrga`/`vpp_rkrga` 运行时报 `Function not implemented`。**已实测定位**——设备树里三核 RGA（`rga3_core0`/`rga3_core1`/`rga2_core0`）均 `status="okay"`，`/dev/rga` open 成功（驱动是好的），ffmpeg（Ubuntu noble 的 6.1.1，带 `--enable-rkrga`）链接的是 Ubuntu 的 `librga.so.2`，非 Rockchip 官方 SDK 的 `librga.so`，用户态库与 RK3588 RGA3 内核接口不兼容 → 提交作业时返回 `Function not implemented`。**这不是驱动问题，是用户态 librga 版本问题**；要在 Ubuntu 上换官方 librga 风险高，收益也有限。
+- **更省 CPU 的正道**：让源端输出 YCbCr（`NV16→NV12` 比 `BGR→NV12` 便宜），或降低 `-framerate`/`-video_size`，都比动 RGA 干净。
 - 推流建议加 `-rtsp_transport tcp`：MediaMTX `rtspTransports` 默认 `[udp, multicast, tcp]`，但公网/防火墙下 UDP SETUP 可能被丢，TCP 最稳。
 - 软编备选（无硬件编码时）：把 `-c:v h264_rkmpp` 换成
   `-c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p`，CPU 占用显著更高。
