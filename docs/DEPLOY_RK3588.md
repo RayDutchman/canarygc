@@ -212,12 +212,14 @@ docker compose --profile production up -d webrtc
 v4l2-ctl --device=/dev/video0 --get-dv-timings   # 应显示 timings，而非 "Link has been severed"
 ffmpeg -f v4l2 -framerate 30 -i /dev/video0 \
        -c:v h264_rkmpp -b:v 4M \
+       -rtsp_transport tcp \
        -f rtsp rtsp://127.0.0.1:8554/cam
 ```
 
 说明：
-- ffmpeg 会自动插入 BGR→NV12 转换再交给 `h264_rkmpp`（已实证 1080p BGR 输入自动转换成功）。
-- 若要让检测/其他管线用，或遇到转换问题，可在 `-filter_complex` 用 RGA 硬件缩放转换（`scale_rkrga` / `format=nv12`）。
+- ffmpeg 会自动插入 BGR→NV12 转换再交给 `h264_rkmpp`（已实证 1080p BGR 输入自动转换成功），该转换是 CPU 软转，约占用单核 60%——对 8 核 RK3588 无压力，编码本身在 VPU 上不占 CPU。
+- **RGA 硬件转格式当前不可用**：虽 Armbian 的 ffmpeg 编译了 `--enable-rkrga`，但本板内核未加载 RGA 驱动（`lsmod` 无 rga 条目），`scale_rkrga` 运行时报 `Function not implemented`。若需更低 CPU，可改用 `-vf format=nv12` 之外的 `vpp_rkrga`（同样不可用）或让源端输出 YCbCr 4:2:2。
+- 推流建议加 `-rtsp_transport tcp`：MediaMTX `rtspTransports` 默认 `[udp, multicast, tcp]`，但公网/防火墙下 UDP SETUP 可能被丢，TCP 最稳。
 - 软编备选（无硬件编码时）：把 `-c:v h264_rkmpp` 换成
   `-c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p`，CPU 占用显著更高。
 
