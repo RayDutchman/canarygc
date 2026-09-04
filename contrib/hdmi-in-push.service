@@ -1,0 +1,28 @@
+# CanaryGC HDMI-in push (RK3588)
+# Captures the on-board HDMI RX (/dev/video0, rk_hdmirx) and pushes it as an
+# H.264 RTSP stream to MediaMTX's `cam` path, so CanaryGC can serve it over
+# WebRTC. Uses RK VPU hardware encoding (h264_rkmpp) for near-zero CPU cost.
+#
+# REQUIRES a valid HDMI source signal on the board's HDMI input; without one,
+# ffmpeg exits with "Invalid argument" and systemd restarts it until a signal
+# is attached.
+#
+# Install:
+#   sudo cp contrib/hdmi-in-push.service /etc/systemd/system/
+#   sudo cp contrib/hdmi-in-push.sh  /usr/local/bin/
+#   sudo systemctl enable --now hdmi-in-push
+[Unit]
+Description=CanaryGC HDMI-in push (rk_hdmirx -> MediaMTX cam)
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hdmi-in-push.sh
+Restart=always
+RestartSec=3
+# Keep the process from being killed by SSH session teardown
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target
