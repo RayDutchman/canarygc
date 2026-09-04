@@ -199,18 +199,27 @@ CanaryGC 的 `usb`(publisher) 源依赖 MediaMTX 的 `runOnDemand` 在**容器�
 
 ### 6.2 方案 A：宿主机 ffmpeg 采集 HDMI-in / MIPI，推 RTSP（推荐）
 
+**用 RK3588 VPU 硬件编码（`h264_rkmpp`）最省 CPU**——Armbian 自带 ffmpeg 已编译 `--enable-rkmpp --enable-rkrga`（已实证 1080p30 编码远超实时，CPU 占用极低）：
+
 ```bash
 # 1) 启动 webrtc（.env 已设 WEBRTC_SOURCE=publisher）
 docker compose --profile production up -d webrtc
 
-# 2) 宿主机采集并推流。RK3588 HDMI 输入 = /dev/video0 (rk_hdmirx)，
-#    先确认有 HDMI 信号（无信号 ffmpeg 会卡住）：
+# 2) 宿主机采集 /dev/video0 (rk_hdmirx) 并硬件编码推 RTSP。
+#    ⚠️ hdmirx 采集格式随源端信号（RGB→bgr24 / YCbCr→nv12），
+#    无需也不应硬写 -video_size（无信号时驱动回退 640x480），让 ffmpeg 自动探测。
+#    必须先接好 HDMI 源且有信号，否则 ffmpeg 报 Invalid argument 卡住。
 v4l2-ctl --device=/dev/video0 --get-dv-timings   # 应显示 timings，而非 "Link has been severed"
-ffmpeg -f v4l2 -framerate 30 -video_size 1280x720 -i /dev/video0 \
-       -c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p \
-       -b:v 1M -maxrate 1M -bufsize 2M \
+ffmpeg -f v4l2 -framerate 30 -i /dev/video0 \
+       -c:v h264_rkmpp -b:v 4M \
        -f rtsp rtsp://127.0.0.1:8554/cam
 ```
+
+说明：
+- ffmpeg 会自动插入 BGR→NV12 转换再交给 `h264_rkmpp`（已实证 1080p BGR 输入自动转换成功）。
+- 若要让检测/其他管线用，或遇到转换问题，可在 `-filter_complex` 用 RGA 硬件缩放转换（`scale_rkrga` / `format=nv12`）。
+- 软编备选（无硬件编码时）：把 `-c:v h264_rkmpp` 换成
+  `-c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p`，CPU 占用显著更高。
 
 `rtsp://127.0.0.1:8554/cam` 即 MediaMTX 的 `cam` 路径（host 网络共享宿主机 `127.0.0.1`）。用 `nohup`/`systemd` 常驻即可。MediaMTX 会在浏览器访问 `:8889/cam` 出 WebRTC 流。
 
