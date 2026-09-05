@@ -118,7 +118,12 @@
     // feed is actually available again. Poll /api/camera.ready (true once the
     // source is streaming) and, on a false->true flip, reload the iframe so the
     // reader re-negotiates immediately instead of waiting out the ICE timeout.
-    let lastReady = false;
+    // lastReady is null until the first poll so a source that is already online
+    // at mount does not trigger a spurious iframe reload (which would flash the
+    // picture once on load).
+    let lastReady: boolean | null = null;
+    let feedTimer: ReturnType<typeof setTimeout> | undefined;
+    let polling = false;
     const pollReady = async (): Promise<boolean> => {
       try {
         const res = await fetch('/api/camera');
@@ -137,27 +142,35 @@
       }
     };
     const checkFeed = async () => {
-      const ready = await pollReady();
-      const available = await pollAvailable();
-      if (ready && !lastReady && iframeEl) {
-        // Feed just came back: reload the reader so it reconnects right away
-        // instead of waiting out the WebRTC ICE disconnect timeout (~10s).
-        iframeEl.src = feedSrc;
+      if (polling) return;
+      polling = true;
+      try {
+        const ready = await pollReady();
+        const available = await pollAvailable();
+        if (ready && lastReady === false && iframeEl) {
+          // Feed just came back: reload the reader so it reconnects right away
+          // instead of waiting out the WebRTC ICE disconnect timeout (~10s).
+          iframeEl.src = feedSrc;
+        }
+        lastReady = ready;
+        reportFeedAvailability(available);
+        if (iframeEl) iframeEl.style.zIndex = available ? '20' : '0';
+        adjustVideoSize();
+        // Poll fast while the source is down (to catch the recovery the moment
+        // it happens) and slow once it is up (to avoid hammering /api/camera
+        // and the MediaMTX API on every client). Chain via setTimeout so a slow
+        // poll never stacks with the next.
+        feedTimer = setTimeout(checkFeed, ready ? 3000 : 400);
+      } finally {
+        polling = false;
       }
-      lastReady = ready;
-      reportFeedAvailability(available);
-      if (iframeEl) iframeEl.style.zIndex = available ? '20' : '0';
-      adjustVideoSize();
     };
     checkFeed();
-
-
-    const feedTimer = setInterval(() => checkFeed(), 400);
 
     window.addEventListener('resize', adjustVideoSize);
 
     return () => {
-      clearInterval(feedTimer);
+      if (feedTimer) clearTimeout(feedTimer);
       window.removeEventListener('resize', adjustVideoSize);
     };
   });
