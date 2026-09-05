@@ -45,8 +45,13 @@ RTSP_MONITOR_INTERVAL="${RTSP_MONITOR_INTERVAL:-4}"  # watchdog poll period (s)
 RTSP_MONITOR_CONSEC="${RTSP_MONITOR_CONSEC:-2}"     # consecutive dead polls before kill
 
 is_posint() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
+is_posnum() {
+    # positive integer or decimal (e.g. 0.5); run once at startup, so the awk
+    # subprocess cost is irrelevant. Rejects 0, 0.0, negatives, and junk.
+    awk -v v="${1:-}" 'BEGIN{exit !(v+0>0 && v ~ /^[0-9]+([.][0-9]+)?$/)}'
+}
 
-# check_int <name> <value> <default>: print value, or warn + print default.
+# check_int <name> <value> <default>: integer-only validator.
 check_int() {
     if is_posint "$2"; then
         printf '%s' "$2"
@@ -56,15 +61,28 @@ check_int() {
     fi
 }
 
+# check_num <name> <value> <default>: validates a positive number (int or
+# decimal seconds); warns and falls back to the default on invalid input.
+check_num() {
+    if is_posnum "$2"; then
+        printf '%s' "$2"
+    else
+        echo "WARN: $1='$2' is not a positive number, using default $3" >&2
+        printf '%s' "$3"
+    fi
+}
+
 FPS="$(check_int FPS "$FPS" 30)"
 BITRATE="$(check_int BITRATE "$BITRATE" 4000000)"
-POLL_INTERVAL="$(check_int POLL_INTERVAL "$POLL_INTERVAL" 2)"
-RETRY_INTERVAL="$(check_int RETRY_INTERVAL "$RETRY_INTERVAL" 2)"
-NODE_POLL_INTERVAL="$(check_int NODE_POLL_INTERVAL "$NODE_POLL_INTERVAL" 5)"
+# Probe/retry intervals default to sub-second so a signal that returns after a
+# short jitter is detected and re-pushed within ~1s, instead of a 2s+ wait.
+POLL_INTERVAL="$(check_num POLL_INTERVAL "$POLL_INTERVAL" 0.5)"
+RETRY_INTERVAL="$(check_num RETRY_INTERVAL "$RETRY_INTERVAL" 0.5)"
+NODE_POLL_INTERVAL="$(check_num NODE_POLL_INTERVAL "$NODE_POLL_INTERVAL" 2)"
 FAST_FAIL_WINDOW_S="$(check_int FAST_FAIL_WINDOW_S "$FAST_FAIL_WINDOW_S" 10)"
 MAX_FAST_FAILS="$(check_int MAX_FAST_FAILS "$MAX_FAST_FAILS" 5)"
 LONG_BACKOFF_S="$(check_int LONG_BACKOFF_S "$LONG_BACKOFF_S" 30)"
-RTSP_MONITOR_INTERVAL="$(check_int RTSP_MONITOR_INTERVAL "$RTSP_MONITOR_INTERVAL" 4)"
+RTSP_MONITOR_INTERVAL="$(check_num RTSP_MONITOR_INTERVAL "$RTSP_MONITOR_INTERVAL" 1)"
 RTSP_MONITOR_CONSEC="$(check_int RTSP_MONITOR_CONSEC "$RTSP_MONITOR_CONSEC" 2)"
 
 # ---- preflight: fail fast with a clear message, systemd backstop restarts ----
