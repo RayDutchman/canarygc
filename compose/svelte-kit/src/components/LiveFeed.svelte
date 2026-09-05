@@ -9,8 +9,6 @@
   let { compact = false }: { compact?: boolean } = $props();
   let containerEl = $state<HTMLElement | null>(null);
   let iframeEl = $state<HTMLIFrameElement | null>(null);
-  let containerAspect = 16 / 9;
-  let videoAspect = 16 / 9;
   let feedSrc = $state('');
   let camKind = $state('');
   let piCamId = $state(0);
@@ -70,22 +68,6 @@
 
   function handleFullScreen() {
     if (containerEl) toggleFullScreen(containerEl);
-  }
-
-  function adjustVideoSize() {
-    if (!containerEl || !iframeEl) return;
-
-    containerAspect = containerEl.clientWidth / containerEl.clientHeight;
-
-    if (containerAspect > videoAspect) {
-      const scale = (containerAspect / videoAspect) * 100;
-      iframeEl.style.width = `${scale}%`;
-      iframeEl.style.height = `${scale}%`;
-    } else {
-      const scale = (videoAspect / containerAspect) * 100;
-      iframeEl.style.width = `${scale}%`;
-      iframeEl.style.height = `${scale}%`;
-    }
   }
 
   function rotateVideo() {
@@ -155,7 +137,6 @@
         lastReady = ready;
         reportFeedAvailability(available);
         if (iframeEl) iframeEl.style.zIndex = available ? '20' : '0';
-        adjustVideoSize();
         // Poll fast while the source is down (to catch the recovery the moment
         // it happens) and slow once it is up (to avoid hammering /api/camera
         // and the MediaMTX API on every client). Chain via setTimeout so a slow
@@ -167,11 +148,8 @@
     };
     checkFeed();
 
-    window.addEventListener('resize', adjustVideoSize);
-
     return () => {
       if (feedTimer) clearTimeout(feedTimer);
-      window.removeEventListener('resize', adjustVideoSize);
     };
   });
 </script>
@@ -320,16 +298,17 @@
   }
 
   #live-feed {
-    width: 300%;
-    height: 300%;
+    width: 100%;
+    height: 100%;
     pointer-events: none;
     background-color: #000;
     position: absolute;
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    object-fit: cover;
-    border-radius: var(--radius-control);
+    /* Fill the whole container. The MediaMTX reader's #video uses
+       object-fit: contain, so it letterboxes the source frame (16:9, 4:3, any
+       ratio) itself and never crops — no ratio is hard-coded here. */
     z-index: 0;
   }
 
