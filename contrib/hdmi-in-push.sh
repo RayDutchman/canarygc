@@ -37,6 +37,12 @@ NODE_POLL_INTERVAL="${NODE_POLL_INTERVAL:-5}"  # rk_hdmirx node wait period (s)
 FAST_FAIL_WINDOW_S="${FAST_FAIL_WINDOW_S:-10}" # ffmpeg run shorter than this counts as a fast fail
 MAX_FAST_FAILS="${MAX_FAST_FAILS:-5}"          # consecutive fast fails before...
 LONG_BACKOFF_S="${LONG_BACKOFF_S:-30}"         # ...a long backoff (s)
+# MediaMTX API host:port (cam path state). The watchdog polls it to detect a
+# dropped RTSP push even when ffmpeg itself stays alive (a stuck half-closed
+# socket); on loss it kills ffmpeg so the exporter restarts cleanly.
+MEDIAMTX_API="${MEDIAMTX_API:-http://127.0.0.1:9997}"
+RTSP_MONITOR_INTERVAL="${RTSP_MONITOR_INTERVAL:-4}"  # watchdog poll period (s)
+RTSP_MONITOR_CONSEC="${RTSP_MONITOR_CONSEC:-2}"     # consecutive dead polls before kill
 
 is_posint() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
 
@@ -58,6 +64,8 @@ NODE_POLL_INTERVAL="$(check_int NODE_POLL_INTERVAL "$NODE_POLL_INTERVAL" 5)"
 FAST_FAIL_WINDOW_S="$(check_int FAST_FAIL_WINDOW_S "$FAST_FAIL_WINDOW_S" 10)"
 MAX_FAST_FAILS="$(check_int MAX_FAST_FAILS "$MAX_FAST_FAILS" 5)"
 LONG_BACKOFF_S="$(check_int LONG_BACKOFF_S "$LONG_BACKOFF_S" 30)"
+RTSP_MONITOR_INTERVAL="$(check_int RTSP_MONITOR_INTERVAL "$RTSP_MONITOR_INTERVAL" 4)"
+RTSP_MONITOR_CONSEC="$(check_int RTSP_MONITOR_CONSEC "$RTSP_MONITOR_CONSEC" 2)"
 
 # ---- preflight: fail fast with a clear message, systemd backstop restarts ----
 for bin in v4l2-ctl ffmpeg; do
@@ -113,6 +121,33 @@ describe_signal() {
     return 0
 }
 
+# Background watchdog: watch the ffmpeg PID and the MediaMTX cam path. When
+# the RTSP push is no longer being accepted (cam online=false) the ffmpeg
+# process may be stuck on a half-closed socket and never exit; SIGKILL it so
+# the driver-facing EINVAL (or wait timeout) resolves and the main loop
+# restarts.
+rtsp_watchdog() {
+    local pid="$1"
+    local dead=0
+    local on
+    while kill -0 "$pid" 2>/dev/null; do
+        # poll MediaMTX's per-path state; a missing/empty body counts as dead
+        on="$(curl -fsS --max-time 3 "$MEDIAMTX_API/v3/paths/get/cam" 2>/dev/null \
+            | grep -o '"online":[a-z]*' | head -1 || true)"
+        if [[ "$on" == *'"online":true'* ]]; then
+            dead=0
+        else
+            dead=$((dead + 1))
+            if (( dead >= RTSP_MONITOR_CONSEC )); then
+                echo "RTSP push lost to MediaMTX (online≠true x${dead}), killing ffmpeg ${pid}"
+                kill -9 "$pid" 2>/dev/null || true
+                return
+            fi
+        fi
+        sleep "$RTSP_MONITOR_INTERVAL"
+    done
+}
+
 push_stream() {
     # NOTE: do not pass -video_size/-pix_fmt for hdmirx - the driver reports the
     # source signal's native geometry/pixel format (bgr24 vs nv12) and cannot be
@@ -122,12 +157,21 @@ push_stream() {
     # SETUP can be dropped and browsers cannot receive UDP; TCP always works.
     # -nostdin: stdin is /dev/null under systemd; never let keypresses (or EOF
     # handling quirks) control a daemonized ffmpeg.
+    # Run ffmpeg in the background and track its PID so the RTSP watchdog can
+    # reap a stuck half-closed push; `wait` still returns its real exit code.
     ffmpeg -hide_banner -nostdin \
         -f v4l2 -framerate "$FPS" -i "$DEV" \
         -c:v h264_rkmpp -b:v "$BITRATE" \
         -maxrate "$BITRATE" -bufsize "$((BITRATE * 2))" \
         -rtsp_transport tcp \
-        -f rtsp rtsp://127.0.0.1:8554/cam
+        -f rtsp rtsp://127.0.0.1:8554/cam &
+    local FFMPEG_PID=$!
+    rtsp_watchdog "$FFMPEG_PID" &
+    local WATCHDOG_PID=$!
+    wait "$FFMPEG_PID"
+    local RC=$?
+    kill "$WATCHDOG_PID" 2>/dev/null || true
+    return "$RC"
 }
 
 # Status flips are logged once each; steady state stays quiet.
