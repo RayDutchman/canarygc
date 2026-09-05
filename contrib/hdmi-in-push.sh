@@ -31,9 +31,9 @@ set -euo pipefail
 # ---- tunables (validated below; invalid values warn and fall back) ----
 FPS="${FPS:-30}"
 BITRATE="${BITRATE:-4000000}"
-POLL_INTERVAL="${POLL_INTERVAL:-2}"            # no-signal probe period (s)
-RETRY_INTERVAL="${RETRY_INTERVAL:-2}"          # wait after a healthy ffmpeg run ends (s)
-NODE_POLL_INTERVAL="${NODE_POLL_INTERVAL:-5}"  # rk_hdmirx node wait period (s)
+POLL_INTERVAL="${POLL_INTERVAL:-0.5}"          # no-signal probe period (s)
+RETRY_INTERVAL="${RETRY_INTERVAL:-0.5}"        # wait after a healthy ffmpeg run ends (s)
+NODE_POLL_INTERVAL="${NODE_POLL_INTERVAL:-2}"  # rk_hdmirx node wait period (s)
 FAST_FAIL_WINDOW_S="${FAST_FAIL_WINDOW_S:-10}" # ffmpeg run shorter than this counts as a fast fail
 MAX_FAST_FAILS="${MAX_FAST_FAILS:-5}"          # consecutive fast fails before...
 LONG_BACKOFF_S="${LONG_BACKOFF_S:-30}"         # ...a long backoff (s)
@@ -41,8 +41,9 @@ LONG_BACKOFF_S="${LONG_BACKOFF_S:-30}"         # ...a long backoff (s)
 # dropped RTSP push even when ffmpeg itself stays alive (a stuck half-closed
 # socket); on loss it kills ffmpeg so the exporter restarts cleanly.
 MEDIAMTX_API="${MEDIAMTX_API:-http://127.0.0.1:9997}"
-RTSP_MONITOR_INTERVAL="${RTSP_MONITOR_INTERVAL:-4}"  # watchdog poll period (s)
-RTSP_MONITOR_CONSEC="${RTSP_MONITOR_CONSEC:-2}"     # consecutive dead polls before kill
+RTSP_MONITOR_INTERVAL="${RTSP_MONITOR_INTERVAL:-1}"  # watchdog poll period (s)
+RTSP_MONITOR_CONSEC="${RTSP_MONITOR_CONSEC:-2}"      # consecutive dead polls before kill
+RTSP_WARMUP_S="${RTSP_WARMUP_S:-8}"                  # cold-start grace before watchdog counts
 
 is_posint() { [[ "${1:-}" =~ ^[1-9][0-9]*$ ]]; }
 is_posnum() {
@@ -84,6 +85,7 @@ MAX_FAST_FAILS="$(check_int MAX_FAST_FAILS "$MAX_FAST_FAILS" 5)"
 LONG_BACKOFF_S="$(check_int LONG_BACKOFF_S "$LONG_BACKOFF_S" 30)"
 RTSP_MONITOR_INTERVAL="$(check_num RTSP_MONITOR_INTERVAL "$RTSP_MONITOR_INTERVAL" 1)"
 RTSP_MONITOR_CONSEC="$(check_int RTSP_MONITOR_CONSEC "$RTSP_MONITOR_CONSEC" 2)"
+RTSP_WARMUP_S="$(check_num RTSP_WARMUP_S "$RTSP_WARMUP_S" 8)"
 
 # ---- preflight: fail fast with a clear message, systemd backstop restarts ----
 for bin in v4l2-ctl ffmpeg; do
@@ -148,6 +150,11 @@ rtsp_watchdog() {
     local pid="$1"
     local dead=0
     local on
+    # Cold-start grace: give ffmpeg time to lock DV timing, init rkmpp, do the
+    # RTSP handshake, and let MediaMTX mark the path online before counting
+    # dead polls. Otherwise a slow first frame gets SIGKILLed and the exporter
+    # thrashes through the fast-fail backoff.
+    sleep "$RTSP_WARMUP_S"
     while kill -0 "$pid" 2>/dev/null; do
         # poll MediaMTX's per-path state; a missing/empty body counts as dead
         on="$(curl -fsS --max-time 3 "$MEDIAMTX_API/v3/paths/get/cam" 2>/dev/null \

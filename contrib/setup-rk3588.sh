@@ -97,10 +97,13 @@ fi
 #### INSTALL ####
 if [[ "$1" != "--setup-only" ]]; then
     cd ~
-    # 克隆本仓库。若运行的是 fork，可先将 REPO_URL 指向你的 fork。
-    REPO_URL=${REPO_URL:-https://github.com/judahpaul16/canarygc.git}
+    # 克隆本仓库。默认取 RK3588 适配 fork 的 rk3588-support 分支（含全部
+    # RK3588 改动：setup-rk3588.sh、hdmi-in-push、WebRTC 恢复、GCS 心跳修复、
+    # 简体中文）。如需用自己的 fork，可先导出 REPO_URL 与 REPO_BRANCH。
+    REPO_URL=${REPO_URL:-https://github.com/RayDutchman/canarygc.git}
+    REPO_BRANCH=${REPO_BRANCH:-rk3588-support}
     sudo rm -rf canarygc
-    git clone "$REPO_URL"
+    git clone -b "$REPO_BRANCH" "$REPO_URL"
     cd canarygc
     sudo chmod +x contrib/setup-rk3588.sh
     cp -n .env.example .env 2>/dev/null || true
