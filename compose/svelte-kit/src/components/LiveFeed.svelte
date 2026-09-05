@@ -112,22 +112,47 @@
       .catch(() => undefined);
 
     // The MediaMTX feed is optional; while it is down the iframe stays behind
-    // the placeholder and the view falls back to the HUD.
-    const fetchLiveFeed = async () => {
-      let available: boolean;
+    // the placeholder and the view falls back to the HUD. When the source comes
+    // back, MediaMTX's built-in WebRTC reader only reconnects after the browser
+    // ICE disconnect timeout (~10s+), which stalls the picture long after the
+    // feed is actually available again. Poll /api/camera.ready (true once the
+    // source is streaming) and, on a false->true flip, reload the iframe so the
+    // reader re-negotiates immediately instead of waiting out the ICE timeout.
+    let lastReady = false;
+    const pollReady = async (): Promise<boolean> => {
+      try {
+        const res = await fetch('/api/camera');
+        const data = res.ok ? await res.json() : null;
+        return Boolean(data?.ready);
+      } catch {
+        return false;
+      }
+    };
+    const pollAvailable = async (): Promise<boolean> => {
       try {
         const response = await fetch(feedSrc);
-        available = response.ok;
+        return Boolean(response.ok);
       } catch {
-        available = false;
+        return false;
       }
+    };
+    const checkFeed = async () => {
+      const ready = await pollReady();
+      const available = await pollAvailable();
+      if (ready && !lastReady && iframeEl) {
+        // Feed just came back: reload the reader so it reconnects right away
+        // instead of waiting out the WebRTC ICE disconnect timeout (~10s).
+        iframeEl.src = feedSrc;
+      }
+      lastReady = ready;
       reportFeedAvailability(available);
       if (iframeEl) iframeEl.style.zIndex = available ? '20' : '0';
       adjustVideoSize();
     };
-    fetchLiveFeed();
+    checkFeed();
 
-    const feedTimer = setInterval(() => fetchLiveFeed(), 5000);
+
+    const feedTimer = setInterval(() => checkFeed(), 1500);
 
     window.addEventListener('resize', adjustVideoSize);
 
