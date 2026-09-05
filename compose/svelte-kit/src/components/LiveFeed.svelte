@@ -152,7 +152,7 @@
     checkFeed();
 
 
-    const feedTimer = setInterval(() => checkFeed(), 1500);
+    const feedTimer = setInterval(() => checkFeed(), 400);
 
     window.addEventListener('resize', adjustVideoSize);
 
