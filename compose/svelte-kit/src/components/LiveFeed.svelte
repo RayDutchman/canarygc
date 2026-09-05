@@ -74,9 +74,9 @@
     if (!iframeEl) return;
 
     if (String(iframeEl.style.transform).includes('rotate(180deg)')) {
-      iframeEl.style.transform = 'translate(-50%, -50%) rotate(0deg)';
+      iframeEl.style.transform = 'rotate(0deg)';
     } else {
-      iframeEl.style.transform = 'translate(-50%, -50%) rotate(180deg)';
+      iframeEl.style.transform = 'rotate(180deg)';
     }
   }
 
@@ -298,17 +298,23 @@
   }
 
   #live-feed {
+    position: absolute;
+    top: 0;
+    left: 0;
     width: 100%;
     height: 100%;
     pointer-events: none;
     background-color: #000;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    /* Fill the whole container. The MediaMTX reader's #video uses
+    border-radius: 0;
+    /* Fill the whole container exactly. Keep explicit width/height (an iframe is
+       a replaced element with an intrinsic 300x150 size, so inset alone does not
+       stretch it). No translate-centering, which left a 1-2px sub-pixel gap that
+       exposed the no-signal layer underneath. border-radius:0 overrides the
+       global `iframe { border-radius: var(--radius-surface) }` (1rem) in app.css,
+       which was rounding the feed more than the .media clip (0.6rem) and showing
+       a larger curve than the no-signal layer. The MediaMTX reader's #video uses
        object-fit: contain, so it letterboxes the source frame (16:9, 4:3, any
-       ratio) itself and never crops — no ratio is hard-coded here. */
+       ratio) itself and never crops. */
     z-index: 0;
   }
 
