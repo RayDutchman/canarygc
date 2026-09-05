@@ -1,27 +1,37 @@
 # CanaryGC HDMI-in push (RK3588)
-# Captures the on-board HDMI RX (/dev/video0, rk_hdmirx) and pushes it as an
-# H.264 RTSP stream to MediaMTX's `cam` path, so CanaryGC can serve it over
-# WebRTC. Uses RK VPU hardware encoding (h264_rkmpp) for near-zero CPU cost.
+# Captures the on-board HDMI RX (rk_hdmirx) and pushes it as an H.264 RTSP
+# stream to MediaMTX's `cam` path, so CanaryGC can serve it over WebRTC. Uses
+# RK VPU hardware encoding (h264_rkmpp) for near-zero CPU cost.
 #
-# REQUIRES a valid HDMI source signal on the board's HDMI input; without one,
-# ffmpeg exits with "Invalid argument" and systemd restarts it until a signal
-# is attached.
+# Source of truth: contrib/hdmi-in-push.sh + contrib/hdmi-in-push.service in
+# the canarygc fork (branch rk3588-support). Edit the repo copies, then
+# re-deploy; never edit the deployed copies in place.
 #
-# Install:
+# The launcher script owns all recovery: it waits for the capture node,
+# polls for a valid HDMI signal, and restarts ffmpeg on signal loss, format
+# changes, or instant failures (with backoff). Restart=on-failure here is
+# only a crash backstop for script bugs.
+#
+# Install / update:
 #   sudo cp contrib/hdmi-in-push.service /etc/systemd/system/
 #   sudo cp contrib/hdmi-in-push.sh  /usr/local/bin/
+#   sudo systemctl daemon-reload
 #   sudo systemctl enable --now hdmi-in-push
 [Unit]
 Description=CanaryGC HDMI-in push (rk_hdmirx -> MediaMTX cam)
 After=docker.service
 Wants=docker.service
+# Never park the backstop: boot-time transients (late driver probe, MediaMTX
+# still starting) look like rapid failures, and the script itself paces all
+# retries - systemd must keep restarting on crash instead of giving up.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/hdmi-in-push.sh
-Restart=always
+Restart=on-failure
 RestartSec=3
-# Keep the process from being killed by SSH session teardown
+# Kill the whole control group on stop so no orphaned ffmpeg survives.
 KillMode=control-group
 
 [Install]

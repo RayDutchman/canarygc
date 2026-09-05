@@ -224,7 +224,29 @@ ffmpeg -f v4l2 -framerate 30 -i /dev/video0 \
 - 软编备选（无硬件编码时）：把 `-c:v h264_rkmpp` 换成
   `-c:v libx264 -preset ultrafast -tune zerolatency -pix_fmt yuv420p`，CPU 占用显著更高。
 
-`rtsp://127.0.0.1:8554/cam` 即 MediaMTX 的 `cam` 路径（host 网络共享宿主机 `127.0.0.1`）。用 `nohup`/`systemd` 常驻即可。MediaMTX 会在浏览器访问 `:8889/cam` 出 WebRTC 流。
+`rtsp://127.0.0.1:8554/cam` 即 MediaMTX 的 `cam` 路径（host 网络共享宿主机 `127.0.0.1`）。MediaMTX 会在浏览器访问 `:8889/cam` 出 WebRTC 流。
+
+#### 6.2.1 常驻推流：`hdmi-in-push.service`（推荐，仓库统一管理）
+
+上面的手工命令只适合调试；长期值守用仓库里的脚本 + 服务（源码唯一真实位置：`contrib/hdmi-in-push.sh` + `contrib/hdmi-in-push.service`，改完部署，勿直接改板上文件）：
+
+```bash
+sudo cp contrib/hdmi-in-push.service /etc/systemd/system/
+sudo cp contrib/hdmi-in-push.sh  /usr/local/bin/
+sudo systemctl daemon-reload
+sudo systemctl enable --now hdmi-in-push
+```
+
+可靠性设计（推流链路必须无人值守 survive 野外）：
+- 等 `rk_hdmirx` 节点出现（开机驱动晚加载不 churn systemd），节点号漂移每轮重找；
+- 轮询 DV timing，有信号才起 ffmpeg，中途掉信号自动回轮询，无信号期不刷屏；
+- 每次启动重探几何/格式（不硬写 `-video_size`），源端切分辨率/制式自动跟上；
+- ffmpeg 秒退连续超限则长退避（MediaMTX 重启中、设备忙时不热循环）；
+- 单实例锁：手动物料测试误开第二份会安静退出，不抢 `/dev/video0`；
+- `Restart=on-failure` + `StartLimitIntervalSec=0` 只是 crash 兜底，永不 park。
+
+可调 env（systemd `Environment=` 或 `EnvironmentFile=` 覆盖，非法值告警后回默认）：
+`FPS`(30)、`BITRATE`(4000000)、`POLL_INTERVAL`(2s 无信号探测)、`RETRY_INTERVAL`(2s 退出重试)、`NODE_POLL_INTERVAL`(5s 等节点)、`FAST_FAIL_WINDOW_S`(10s)/`MAX_FAST_FAILS`(5次)/`LONG_BACKOFF_S`(30s 快失败退避)。
 
 ### 6.3 两块不同开发板的视频接入
 
