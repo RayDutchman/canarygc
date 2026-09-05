@@ -654,6 +654,11 @@
 
     HEARTBEAT: (text: string) => {
       const type = extractValue(text, 'type');
+      // Type 6 is MAV_TYPE_GCS: a bridge or a second ground station on the
+      // link beats too, and its heartbeat must never shadow the vehicle's
+      // (mirrors the server-side guard in lib/server/mavlink.ts). Without
+      // this, Autopilot Model flips between GENERIC and the real autopilot.
+      if (type && parseInt(type) === 6) return;
       if (type) mavTypeStore.set(toProperCase(MavType[parseInt(type)]));
 
       const model = extractValue(text, 'autopilot');
